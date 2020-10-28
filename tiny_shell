@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+pid_regex="[0-9]+"
+status_format='%-10s%-20s%-30s%-40s%-30s%-20s\n'
+bg_process_regex='.+&'
+pid_file=/tmp/tiny_shell_pid
+
+path() {
+    [[ -n $1 ]] && echo ${!1} || printenv
+}
+
+dir() {
+    [[ -n $1 ]] && ls -al $1 || ls -al
+}
+
+addpath() {
+    [[ $# -ne 2 ]] && echo 'Invalid syntax' || export $1=$2
+}
+
+echo_date() {
+    date +"%A %d-%m-%Y"
+}
+
+echo_time() {
+    date +"%r"
+}
+
+exec_bash() {
+    eval $@
+}
+
+update_pid_file() {
+    mapfile -t pids <$pid_file
+    >$pid_file
+    if [[ -n $pids ]]; then
+        for pid in "${pids[@]}"; do
+            status=$(echo $(ps -q $pid --no-header))
+            [[ -n $status ]] && echo $pid >>$pid_file
+        done
+    fi
+}
+
+pause() {
+    [[ $# -lt 1 ]] && echo 'PID not specified'
+    for pid in $@; do
+        if ! [[ $pid =~ $pid_regex ]]; then
+            echo 'Invalid PID'
+            break
+        else
+            status=$(echo $(ps -q $pid -o state --no-header) | tr '[:upper:]' '[:lower:]')
+            [[ -z $status || 'rs' != *"$status"* ]] &&
+                echo 'No running processes were found' ||
+                kill -STOP $pid
+        fi
+    done
+}
+
+resume() {
+    [[ $# -lt 1 ]] && echo 'PID not specified'
+    for pid in $@; do
+        if ! [[ $pid =~ $pid_regex ]]; then
+            echo 'Invalid PID'
+            break
+        else
+            status=$(echo $(ps -q $pid -o state --no-header) | tr '[:upper:]' '[:lower:]')
+            [[ -z $status || $status != 't' ]] &&
+                echo 'No stopped processes were found' ||
+                kill -CONT $pid
+        fi
+    done
+}
+
+terminate() {
+    [[ $# -lt 1 ]] && echo 'PID not specified'
+    for pid in $@; do
+        if ! [[ $pid =~ $pid_regex ]]; then
+            echo 'Invalid PID'
+            break
+        else
+            status=$(echo $(ps -q $pid -o state --no-header) | tr '[:upper:]' '[:lower:]')
+            [[ -z $status || 'rst' != *"$status"* ]] &&
+                echo 'Could not find out the process could be terminated' ||
+                kill -SIGKILL $pid
+        fi
+    done
+}
+
+status() {
+    [[ -z $1 ]] && return 1
+    fields=(pid user cmd state lstart etime)
+    for field in "${fields[@]}"; do
+        read ${field} <<<$(echo $(ps -q $1 -o $field --no-header))
+    done
+    case $state in
+    D)
+        state='Uninterruptible sleep'
+        ;;
+    R)
+        state='Running or runnable'
+        ;;
+    S)
+        state='Interruptible sleep'
+        ;;
+    T)
+        state='Stopped by job control signal'
+        ;;
+    t)
+        state='Stopped by debugger during the tracing'
+        ;;
+    W)
+        state='Paging'
+        ;;
+    X)
+        state='Dead'
+        ;;
+    Z)
+        state='Defunct process'
+        ;;
+    esac
+    printf "$status_format" "$pid" "$user" "$cmd" "$state" "$lstart" "$etime"
+}
+
+status_with_header() {
+    printf "$status_format" PID USER COMMAND STATUS STARTED ELAPSED
+    status $1
+}
+
+list() {
+    printf "$status_format" PID USER COMMAND STATUS STARTED ELAPSED
+    mapfile -t pids <$pid_file
+    for pid in "${pids[@]}"; do
+        status $pid
+    done
+}
+
+#IFS=','
+#read -a path_arr <<< $(echo $PATH | tr ':' ',')
+
+main() {
+    read -p '>>> ' statement
+    while [[ $statement != 'exit' ]]; do
+        if [[ $statement =~ $bg_process_regex ]]; then
+            exec_bash $statement >/dev/null 2>&1
+            echo $! >>$pid_file
+        else
+            exec_bash $statement
+        fi
+        read -p '>>> ' statement
+    done
+}
+
+update_pid_file
+trap main SIGINT
+main
