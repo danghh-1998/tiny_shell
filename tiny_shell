@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 
 pid_regex="[0-9]+"
-status_format='%-10s%-20s%-30s%-40s%-30s%-20s\n'
-bg_process_regex='.+&'
-pid_file=/tmp/tiny_shell_pid
+status_format='%-10s%-20s%-60s%-40s%-30s%-20s\n'
+bg_process_regex='.+ &'
 
 path() {
     [[ -n $1 ]] && echo ${!1} || printenv
 }
 
 dir() {
-    [[ -n $1 ]] && ls -al $1 || ls -al
+    if [[ ! -d $1 ]]; then
+        echo "No such directory"
+    else
+        [[ -n $1 ]] && ls -A $1 || ls -A
+    fi
 }
 
 addpath() {
@@ -26,18 +29,21 @@ echo_time() {
 }
 
 exec_bash() {
-    eval $@
+    if [[ "$@" =~ time ]]; then
+        echo_time
+    elif [[ "$@" =~ date ]]; then
+        echo_date
+    else
+        eval $@
+    fi
 }
 
-update_pid_file() {
-    mapfile -t pids <$pid_file
-    >$pid_file
-    if [[ -n $pids ]]; then
-        for pid in "${pids[@]}"; do
-            status=$(echo $(ps -q $pid --no-header))
-            [[ -n $status ]] && echo $pid >>$pid_file
-        done
-    fi
+list_descendants() {
+    local sub_processes=$(pgrep -P $1)
+    [[ -n $sub_processes ]] && echo $sub_processes | tr ' ' '\n'
+    for sub_process in $sub_processes; do
+        list_descendants $sub_process
+    done
 }
 
 pause() {
@@ -70,22 +76,7 @@ resume() {
     done
 }
 
-terminate() {
-    [[ $# -lt 1 ]] && echo 'PID not specified'
-    for pid in $@; do
-        if ! [[ $pid =~ $pid_regex ]]; then
-            echo 'Invalid PID'
-            break
-        else
-            status=$(echo $(ps -q $pid -o state --no-header) | tr '[:upper:]' '[:lower:]')
-            [[ -z $status || 'rst' != *"$status"* ]] &&
-                echo 'Could not find out the process could be terminated' ||
-                kill -SIGKILL $pid
-        fi
-    done
-}
-
-status() {
+status_without_header() {
     [[ -z $1 ]] && return 1
     fields=(pid user cmd state lstart etime)
     for field in "${fields[@]}"; do
@@ -120,35 +111,94 @@ status() {
     printf "$status_format" "$pid" "$user" "$cmd" "$state" "$lstart" "$etime"
 }
 
-status_with_header() {
-    printf "$status_format" PID USER COMMAND STATUS STARTED ELAPSED
-    status $1
+status() {
+    if [[ -z "$(ps -p $pid -o pid=)" ]]; then
+        echo "Process $1 not found"
+    else
+        printf "$status_format" PID USER COMMAND STATUS STARTED ELAPSED
+        status_without_header $1
+    fi
 }
 
 list() {
+    pids=($(list_descendants $$))
     printf "$status_format" PID USER COMMAND STATUS STARTED ELAPSED
-    mapfile -t pids <$pid_file
     for pid in "${pids[@]}"; do
-        status $pid
+        if [[ -z "$(ps -p $pid -o pid=)" ]]; then
+            continue
+        fi
+        status_without_header $pid
     done
 }
 
-#IFS=','
-#read -a path_arr <<< $(echo $PATH | tr ':' ',')
+terminate() {
+    [[ $# -lt 1 ]] && echo 'PID not specified'
+    if ! [[ $1 =~ $pid_regex ]]; then
+        echo 'Invalid PID'
+    else
+        status=$(echo $(ps -q $1 -o state --no-header) | tr '[:upper:]' '[:lower:]')
+        if [[ -z $status || 'rst' != *"$status"* ]]; then
+            echo 'Could not find out the process could be terminated'
+        else
+            pids=($(list_descendants $1))
+            for pid in ${pids[@]}; do
+                if [[ -z "$(ps -p $pid -o pid=)" ]]; then
+                    continue
+                fi
+                kill $pid
+                echo "Process $pid terminated"
+            done
+        fi
+    fi
+}
+
+help() {
+    echo "
+                    WELCOME TO TINY SHELL
+
+        Tiny shell support the following commands:
+
+        dir       : Lists directory contents of files and directories.
+        list      : List all background processes.
+        status    : Print the current status of a specific process
+        addpath   : Add an environment variable to the current shell.
+        path      : Print \$PATH
+        pause     : Pause a process.
+        resume    : Resume a process.
+        terminate : Terminate a process.
+        <cmd>     : Execute the process given by <cmd>.
+        exit      : Exit tiny shell.
+        help      : Print this help.
+
+
+    "
+}
 
 main() {
+    help
     read -p '>>> ' statement
+    statement=$(echo $statement | tr -d '[:cntrl:]\n')
     while [[ $statement != 'exit' ]]; do
-        if [[ $statement =~ $bg_process_regex ]]; then
-            exec_bash $statement >/dev/null 2>&1
-            echo $! >>$pid_file
+        IFS=$' ' read -a split_statement <<<$statement
+        command=${split_statement[0]}
+        available_commands=$(compgen -c)
+        if [[ $available_commands == *"$command"* ]]; then
+            if [[ $statement =~ $bg_process_regex ]]; then
+                exec_bash $statement >/dev/null 2>&1
+            else
+                exec_bash $statement
+            fi
         else
-            exec_bash $statement
+            echo "Bad command"
         fi
         read -p '>>> ' statement
+        statement=$(echo $statement | tr -d '[:cntrl:]\n')
     done
 }
 
-update_pid_file
+IFS=$',' read -a path_arr <<<$(echo $PATH | tr ':' ',')
+! [[ "$PATH" == *"$PWD"* ]] && export PATH="$PATH":"$PWD"
+chmod -R +x $PWD
 trap main SIGINT
 main
+terminate $$

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+./child&
+./child&
+./child&
+./child&
+sleep 200
+echo done
